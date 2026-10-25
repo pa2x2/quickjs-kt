@@ -1,13 +1,17 @@
 package com.dokar.quickjs.test
 
+import com.dokar.quickjs.QuickJsException
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.quickJs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -168,6 +172,25 @@ class AsyncErrorHandlingTest {
                 assertContains(it.message!!, "Cannot find the kotlin type of object")
             }
             assertFalse(delayed)
+        }
+    }
+
+    @Test
+    fun failedEvaluationDoesNotFailTheNextOne() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                asyncFunction("delay") { delay((it[0] as Number).toLong()) }
+                // The stray rejection fails the evaluation while 'delay(50)' is still
+                // pending; cancelling that job must not reject into the next evaluation.
+                repeat(20) {
+                    assertFailsWith<QuickJsException> {
+                        evaluate<Any?>(
+                            "delay(0).then(() => { Promise.reject(new Error('stray')) }); await delay(50); 1"
+                        )
+                    }
+                    assertEquals(2, evaluate<Int>("1 + 1"))
+                }
+            }
         }
     }
 }

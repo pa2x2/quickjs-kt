@@ -67,6 +67,7 @@ import quickjs.qjs_interrupt_poll
 import quickjs.qjs_interrupt_request
 import quickjs.qjs_interrupt_reset
 import quickjs.quickjs_version
+import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -431,7 +432,7 @@ actual class QuickJs private constructor(
             try {
                 val result = block(args.sliceArray(2..<args.size))
                 jsMutex.withLock {
-                    if (isClosed) return@withLock
+                    if (isClosed || session.isFinished) return@withLock
                     withEvaluationSession(session) {
                         context.invokeJsFunction(resolveFunc, arrayOf(result))
                     }
@@ -439,7 +440,7 @@ actual class QuickJs private constructor(
                 signalRuntimeProgress()
             } catch (e: Throwable) {
                 jsMutex.withLock {
-                    if (isClosed) return@withLock
+                    if (isClosed || session.isFinished) return@withLock
                     withEvaluationSession(session) {
                         context.invokeJsFunction(rejectFunc, arrayOf(e))
                     }
@@ -474,8 +475,9 @@ actual class QuickJs private constructor(
                     requestInterruptIfOpen()
                 }
             }
+            val session = EvaluationSession()
             try {
-                evalInSession(EvaluationSession(), isRoot = true, block)
+                evalInSession(session, isRoot = true, block)
             } catch (e: QuickJsException) {
                 // Cancellation wins over the interrupt error
                 coroutineContext.ensureActive()
@@ -486,6 +488,8 @@ actual class QuickJs private constructor(
                 }
                 throw e
             } finally {
+                // Jobs left behind by a failed or cancelled evaluation
+                withContext(NonCancellable) { cancelAsyncJobs(session) }
                 interruptOnCancel.complete()
                 resetInterruptState(0L)
             }
@@ -611,7 +615,7 @@ actual class QuickJs private constructor(
                 emptyList()
             }
             if (hasUnhandledException) {
-                activeJobs.forEach { it.cancel() }
+                cancelAsyncJobs(session)
                 return
             }
             val hasActiveJobs = activeJobs.isNotEmpty()
@@ -641,6 +645,7 @@ actual class QuickJs private constructor(
     }
 
     private suspend fun cancelAsyncJobs(session: EvaluationSession) {
+        session.isFinished = true
         jobsMutex.withLock {
             asyncJobs.filter { it.session === session && it.job.isActive }
         }.forEach { it.job.cancel() }
@@ -811,6 +816,14 @@ actual class QuickJs private constructor(
     private class EvaluationSession : AbstractCoroutineContextElement(Key) {
         val evaluations = mutableMapOf<Long, EvaluationState>()
         val unhandledRejections = linkedMapOf<Long, Throwable>()
+
+        /**
+         * Set once the root evaluation stops awaiting its jobs. Jobs still running
+         * then must not settle their promises: the reactions would only run in the
+         * next evaluation's job loop and fail it with this one's errors.
+         */
+        @Volatile
+        var isFinished = false
 
         companion object Key : CoroutineContext.Key<EvaluationSession>
     }
