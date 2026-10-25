@@ -26,8 +26,7 @@ static int64_t qjs_now_ms(void) {
 #endif
 }
 
-static int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
-    QjsInterruptState *state = (QjsInterruptState *) opaque;
+static int qjs_interrupt_check(QjsInterruptState *state) {
     if (state == NULL) {
         return 0;
     }
@@ -41,6 +40,10 @@ static int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
         return 1;
     }
     return 0;
+}
+
+static int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
+    return qjs_interrupt_check((QjsInterruptState *) opaque);
 }
 
 void *qjs_interrupt_install(JSRuntime *rt) {
@@ -74,4 +77,8 @@ void qjs_interrupt_reset(void *state, int64_t timeout_ms) {
 
 int qjs_interrupt_fired(void *state) {
     return state != NULL && ((QjsInterruptState *) state)->fired;
+}
+
+int qjs_interrupt_poll(void *state) {
+    return qjs_interrupt_check((QjsInterruptState *) state);
 }

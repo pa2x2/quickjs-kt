@@ -63,6 +63,7 @@ import quickjs.JS_UpdateStackTop
 import quickjs.qjs_interrupt_fired
 import quickjs.qjs_interrupt_free
 import quickjs.qjs_interrupt_install
+import quickjs.qjs_interrupt_poll
 import quickjs.qjs_interrupt_request
 import quickjs.qjs_interrupt_reset
 import quickjs.quickjs_version
@@ -571,6 +572,7 @@ actual class QuickJs private constructor(
     ) {
         while (true) {
             val observedProgress = runtimeProgress.value
+            var drainStopped = false
             val (resultPending, executedJobs) = jsMutex.withLock {
                 if (isClosed) throw CancellationException("Already closed.")
                 withEvaluationSession(session) {
@@ -582,9 +584,19 @@ actual class QuickJs private constructor(
                         }
                         val executed = execResult == ExecuteJobResult.Success
                         executedAny = executedAny || executed
+                        if (executed && shouldStopDrainingJobs()) {
+                            drainStopped = true
+                            break
+                        }
                     } while (executed)
                     resultPromise.isPending(context) to executedAny
                 }
+            }
+            if (drainStopped) {
+                // Jobs the script queued stay queued, the runtime can't drop them
+                if (isRoot) cancelAsyncJobs(session)
+                if (isClosed) throw CancellationException("Already closed.")
+                throw QuickJsInterruptedException("InternalError: interrupted")
             }
 
             var hasUnhandledException = false
@@ -614,6 +626,24 @@ actual class QuickJs private constructor(
             if (!resultPending && !hasActiveJobs) continue
             runtimeProgress.first { it != observedProgress }
         }
+    }
+
+    /**
+     * Whether the pending job loop must stop: the instance was closed, or an
+     * interrupt was requested or the timeout passed. Checked between jobs because
+     * a job can queue the next one before it gets interrupted (dokar3/quickjs-kt#240).
+     */
+    private fun shouldStopDrainingJobs(): Boolean {
+        if (isClosed) return true
+        return interruptMutex.withLockSync {
+            interruptState?.let { qjs_interrupt_poll(it) != 0 } ?: false
+        }
+    }
+
+    private suspend fun cancelAsyncJobs(session: EvaluationSession) {
+        jobsMutex.withLock {
+            asyncJobs.filter { it.session === session && it.job.isActive }
+        }.forEach { it.job.cancel() }
     }
 
     /** Returns whether the native bridge should install the custom module normalizer. */

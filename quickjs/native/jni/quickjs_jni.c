@@ -491,6 +491,14 @@ Java_com_dokar_quickjs_QuickJs_wasInterrupted(JNIEnv *env, jobject this, jlong s
 }
 
 /**
+ * Whether an interrupt was requested or the deadline passed, marking it fired.
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_dokar_quickjs_QuickJs_pollInterrupt(JNIEnv *env, jobject this, jlong state_ptr) {
+    return qjs_interrupt_poll((void *) state_ptr) ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
  * Get the runtime memory usage.
  */
 JNIEXPORT jobject JNICALL
