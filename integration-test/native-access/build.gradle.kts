@@ -14,11 +14,12 @@ repositories {
     mavenCentral()
 }
 
+val quickjsGroup = providers.gradleProperty("GROUP").get()
 val quickjsVersion = providers.gradleProperty("VERSION_NAME").get()
 
 val quickjsClasspath = configurations.create("quickjsClasspath")
 dependencies {
-    quickjsClasspath("io.github.dokar3:quickjs-kt-jvm:$quickjsVersion")
+    quickjsClasspath("$quickjsGroup:quickjs-kt-jvm:$quickjsVersion")
 }
 
 val nativeBuildDirectory = layout.buildDirectory.dir("native")
@@ -213,7 +214,7 @@ kotlin {
     sourceSets {
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("io.github.dokar3:quickjs-kt:$quickjsVersion")
+            implementation("$quickjsGroup:quickjs-kt:$quickjsVersion")
             implementation(libs.kotlinx.coroutines.test)
         }
     }

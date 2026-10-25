@@ -1,9 +1,10 @@
 <div align="center">
 <h1> QuickJS - KT </h1>
-<img alt="Maven Central" src="https://img.shields.io/maven-central/v/io.github.dokar3/quickjs-kt?style=flat-square&color=%23ea197e">
 <p>Run your JavaScript code in Kotlin, asynchronously.</p>
 <img src="./media/async-eval-demo.gif" alt="The async eval demo">
 </div>
+
+> This is a fork of [dokar3/quickjs-kt](https://github.com/dokar3/quickjs-kt) maintained for [Katari](https://github.com/pa2x2/katari). It is published under the `io.github.pa2x2` group; package names (`com.dokar.quickjs`) are unchanged, so it is a drop-in replacement. Fixes carried on top of upstream are listed in the commit history.
 
 This is a [QuickJS](https://bellard.org/quickjs/) binding for idiomatic Kotlin, inspired by Cash App's [Zipline](https://github.com/cashapp/zipline) (previously Duktape Android) but with more flexibility.
 
@@ -30,13 +31,13 @@ That's why I created this library, with some good features:
 In `build.gradle.kts`:
 
 ```kotlin
-implementation("io.github.dokar3:quickjs-kt:<VERSION>")
+implementation("io.github.pa2x2:quickjs-kt:<VERSION>")
 ```
 
 Or in `libs.versions.toml`:
 
 ```toml
-quickjs-kt = { module = "io.github.dokar3:quickjs-kt", version = "<VERSION>" }
+quickjs-kt = { module = "io.github.pa2x2:quickjs-kt", version = "<VERSION>" }
 ```
 
 ### Android unit tests
@@ -47,8 +48,8 @@ A desktop JVM cannot load the Android native library, so local unit tests need t
 ```kotlin
 configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
     resolutionStrategy.dependencySubstitution {
-        substitute(module("io.github.dokar3:quickjs-kt-android"))
-            .using(module("io.github.dokar3:quickjs-kt-jvm:<VERSION>"))
+        substitute(module("io.github.pa2x2:quickjs-kt-android"))
+            .using(module("io.github.pa2x2:quickjs-kt-jvm:<VERSION>"))
     }
 }
 ```
@@ -419,9 +420,9 @@ and `quickjs-kt-convereter-moshi` (JVM only).
 1. Add the dependency
 
     ```kotlin
-    implementation("io.github.dokar3:quickjs-kt-converter-ktxserialization:<VERSION>")
+    implementation("io.github.pa2x2:quickjs-kt-converter-ktxserialization:<VERSION>")
     // Or use the moshi converter
-    implementation("io.github.dokar3:quickjs-kt-converter-moshi:<VERSION>")
+    implementation("io.github.pa2x2:quickjs-kt-converter-moshi:<VERSION>")
     ```
 
 2. Add the type converters of your classes
