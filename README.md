@@ -517,6 +517,7 @@ You may need these tools to build and run this project:
 
 ```
 Copyright 2024 dokar3
+Copyright 2026 Kiryl Kvit
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
