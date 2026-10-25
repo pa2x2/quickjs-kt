@@ -66,12 +66,13 @@ jobs:
           echo "group=$group" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Test
-        run: ./gradlew :quickjs:jvmTest
-
-      # A task name containing 'publish' makes the build cross-compile every desktop JNI library.
-      - name: Build the artifacts
-        run: ./gradlew :quickjs:publishAndroidReleasePublicationToMavenLocal :quickjs:publishJvmPublicationToMavenLocal
+      # A task name containing 'publish' makes the build cross-compile every desktop JNI library
+      # in release mode; testing in the same invocation runs the tests on the library that ships.
+      - name: Test and build the artifacts
+        run: >-
+          ./gradlew :quickjs:jvmTest
+          :quickjs:publishAndroidReleasePublicationToMavenLocal
+          :quickjs:publishJvmPublicationToMavenLocal
 
       - name: Stage and check the artifacts
         env:
