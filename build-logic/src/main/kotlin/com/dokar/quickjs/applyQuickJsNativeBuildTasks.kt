@@ -28,9 +28,16 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
 
         outputs.dir(jniLibOutDir)
 
+        // Publishing builds every platform in release mode, other builds only the current
+        // platform in debug mode. Without this as an input, a debug build left by an earlier
+        // task in the same invocation (or an earlier run) counts as up to date for publishing.
+        val isPublishing = gradle.startParameter.taskNames
+            .any { it.contains("publish", ignoreCase = true) }
+        inputs.property("publishing", isPublishing)
+
         doLast {
-            val taskNames = gradle.startParameter.taskNames
-            val isPublishing = taskNames.any { it.contains("publish", ignoreCase = true) }
+            // Drop the other mode's libraries, the jar packs whatever is in here
+            delete(jniLibOutDir)
             if (isPublishing) {
                 for (platform in jniLibraryPlatforms) {
                     buildQuickJsNativeLibrary(
@@ -99,7 +106,7 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
             if (!sharedLibFile.exists()) {
                 return@doLast
             }
-            copy {
+            sync {
                 from(sharedLibFile)
                 into(outputDir)
                 include("*/*.dll", "*/*.so", "*/*.dylib")
@@ -122,6 +129,8 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
     // Jvm test: Copy shared libs to classes dir
     tasks.named("jvmTest") {
         dependsOn(copyQuickJsJniLibsTask.name)
+        // The tests load this library; rerun them when it changes
+        inputs.files(tasks.named(copyQuickJsJniLibsTask.name).map { it.outputs.files })
         doFirst {
             val libDir = tasks.getByName(copyQuickJsJniLibsTask.name).outputs.files.first()
             copy {
