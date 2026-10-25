@@ -1,0 +1,117 @@
+name: Release
+
+# Builds the Android AAR and the desktop JVM jar and publishes them as a GitHub release
+# 'quickjs-kt-<VERSION_NAME>', with a SHA256SUMS file. The README shows how to resolve them
+# through an Ivy repository.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_RELEASE_SIGNING_ENABLED: false
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Build system for C
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2.2
+
+      # CMake generator
+      - name: Setup ninja-build
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      # Cross-compiles the desktop JNI libraries
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.12.0
+
+      - name: Set Bun.js
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # JNI headers of every desktop platform the jar bundles a library for
+      - name: Install multiplatform JDKs
+        run: bun scripts/setupMultiplatformJdks.ts
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(sed -n 's/^VERSION_NAME=//p' gradle.properties)
+          group=$(sed -n 's/^GROUP=//p' gradle.properties)
+          tag="quickjs-kt-$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists; bump VERSION_NAME in gradle.properties"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "group=$group" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: ./gradlew :quickjs:jvmTest
+
+      # A task name containing 'publish' makes the build cross-compile every desktop JNI library.
+      - name: Build the artifacts
+        run: ./gradlew :quickjs:publishAndroidReleasePublicationToMavenLocal :quickjs:publishJvmPublicationToMavenLocal
+
+      - name: Stage and check the artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GROUP: ${{ steps.version.outputs.group }}
+        run: |
+          repo="$HOME/.m2/repository/${GROUP//.//}"
+          mkdir dist
+          cp "$repo/quickjs-kt-android/$VERSION/quickjs-kt-android-$VERSION.aar" dist/
+          cp "$repo/quickjs-kt-jvm/$VERSION/quickjs-kt-jvm-$VERSION.jar" dist/
+          cp LICENSE.txt "dist/quickjs-kt-$VERSION-LICENSE.txt"
+
+          aar="dist/quickjs-kt-android-$VERSION.aar"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            unzip -l "$aar" | grep -q "jni/$abi/libquickjs.so" || { echo "::error::$abi missing from the AAR"; exit 1; }
+          done
+          # Android 15+ devices with 16 KB pages need 16 KB aligned LOAD segments
+          unzip -o -q "$aar" 'jni/*' -d aar-libs
+          for so in aar-libs/jni/*/libquickjs.so; do
+            if readelf -lW "$so" | awk '$1 == "LOAD" && $NF != "0x4000" { bad = 1 } END { exit !bad }'; then
+              echo "::error::$so is not 16 KB aligned"; exit 1
+            fi
+          done
+
+          jar="dist/quickjs-kt-jvm-$VERSION.jar"
+          for lib in linux_x64/libquickjs.so linux_aarch64/libquickjs.so macos_x64/libquickjs.dylib \
+                     macos_aarch64/libquickjs.dylib windows_x64/libquickjs.dll; do
+            unzip -l "$jar" | grep -q "jni/$lib" || { echo "::error::$lib missing from the jar"; exit 1; }
+          done
+
+          (cd dist && sha256sum -- * > "quickjs-kt-$VERSION-SHA256SUMS.txt")
+          cat "dist/quickjs-kt-$VERSION-SHA256SUMS.txt"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "quickjs-kt $VERSION" \
+            --notes "Built by the Release workflow from $GITHUB_SHA. Checksums: quickjs-kt-$VERSION-SHA256SUMS.txt."

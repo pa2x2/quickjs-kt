@@ -1,13 +1,17 @@
 package com.dokar.quickjs.test
 
+import com.dokar.quickjs.QuickJsException
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.quickJs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -168,6 +172,55 @@ class AsyncErrorHandlingTest {
                 assertContains(it.message!!, "Cannot find the kotlin type of object")
             }
             assertFalse(delayed)
+        }
+    }
+
+    @Test
+    fun failedEvaluationDoesNotFailTheNextOne() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                asyncFunction("delay") { delay((it[0] as Number).toLong()) }
+                // The stray rejection fails the evaluation while 'delay(50)' is still
+                // pending; cancelling that job must not reject into the next evaluation.
+                repeat(20) {
+                    assertFailsWith<QuickJsException> {
+                        evaluate<Any?>(
+                            "delay(0).then(() => { Promise.reject(new Error('stray')) }); await delay(50); 1"
+                        )
+                    }
+                    assertEquals(2, evaluate<Int>("1 + 1"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun unhandledRejectionHandlerReportsInsteadOfFailing() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                asyncFunction("delay") { delay((it[0] as Number).toLong()) }
+                val reported = mutableListOf<Throwable>()
+                unhandledRejectionHandler = { reported += it }
+
+                // Reported, and the evaluation still returns its result
+                assertEquals(
+                    42,
+                    evaluate<Int>("Promise.reject(new Error('stray')); await delay(10); 42"),
+                )
+                // Handled after awaiting a binding: neither reported nor failing
+                assertEquals(
+                    1,
+                    evaluate<Int>(
+                        "const late = Promise.reject(new Error('late')); await delay(10); late.catch(() => {}); 1"
+                    ),
+                )
+                // The evaluated code's own error still fails the evaluation
+                assertFailsWith<QuickJsException> {
+                    evaluate<Any?>("await delay(1); throw new Error('own')")
+                }
+                assertEquals(1, reported.size)
+                assertContains(reported.single().message!!, "stray")
+            }
         }
     }
 }

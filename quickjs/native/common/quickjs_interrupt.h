@@ -26,4 +26,12 @@ void qjs_interrupt_reset(void *state, int64_t timeout_ms);
 /* 1 if the handler aborted an evaluation since the last reset. */
 int qjs_interrupt_fired(void *state);
 
+/*
+ * Check the request and deadline outside of JavaScript execution, the way the
+ * interrupt handler does, and mark the state fired when either applies. Lets
+ * the pending job loop stop between jobs: a job that queues the next job before
+ * it gets interrupted would otherwise keep the loop running forever.
+ */
+int qjs_interrupt_poll(void *state);
+
 #endif // QJS_KT_QUICKJS_INTERRUPT_H

@@ -4,7 +4,7 @@
 <img src="./media/async-eval-demo.gif" alt="The async eval demo">
 </div>
 
-> This is a fork of [dokar3/quickjs-kt](https://github.com/dokar3/quickjs-kt) maintained for [Katari](https://github.com/pa2x2/katari). It is published under the `io.github.pa2x2` group; package names (`com.dokar.quickjs`) are unchanged, so it is a drop-in replacement. Fixes carried on top of upstream are listed in the commit history.
+> This is a fork of [dokar3/quickjs-kt](https://github.com/dokar3/quickjs-kt). Only the Android AAR and the desktop JVM jar are released, as assets of this repository's GitHub releases under the `io.github.pa2x2` group (see [Installation](#installation)); package names (`com.dokar.quickjs`) are unchanged, so it is a drop-in replacement. Fixes carried on top of upstream are listed in the commit history.
 
 This is a [QuickJS](https://bellard.org/quickjs/) binding for idiomatic Kotlin, inspired by Cash App's [Zipline](https://github.com/cashapp/zipline) (previously Duktape Android) but with more flexibility.
 
@@ -28,16 +28,34 @@ That's why I created this library, with some good features:
 
 ### Installation
 
-In `build.gradle.kts`:
+Releases are tagged `quickjs-kt-<VERSION>` and carry `quickjs-kt-android-<VERSION>.aar`,
+`quickjs-kt-jvm-<VERSION>.jar` and their SHA-256 sums. Resolve them through an Ivy
+repository in `settings.gradle.kts`:
 
 ```kotlin
-implementation("io.github.pa2x2:quickjs-kt:<VERSION>")
+dependencyResolutionManagement {
+    repositories {
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    url = uri("https://github.com/pa2x2/quickjs-kt/releases/download")
+                    patternLayout { artifact("quickjs-kt-[revision]/[artifact]-[revision].[ext]") }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeGroup("io.github.pa2x2") }
+        }
+    }
+}
 ```
 
-Or in `libs.versions.toml`:
+The release has no POM, so name the artifact type, and depend on
+`kotlinx-coroutines-core` yourself:
 
-```toml
-quickjs-kt = { module = "io.github.pa2x2:quickjs-kt", version = "<VERSION>" }
+```kotlin
+implementation("io.github.pa2x2:quickjs-kt-android:<VERSION>") {
+    artifact { type = "aar" }
+}
 ```
 
 ### Android unit tests
@@ -415,7 +433,8 @@ quickJs {
 ```
 
 You can also use the converter from `quickjs-kt-converter-ktxserialization`
-and `quickjs-kt-convereter-moshi` (JVM only).
+and `quickjs-kt-convereter-moshi` (JVM only). This fork doesn't release them;
+build them from source.
 
 1. Add the dependency
 
@@ -483,6 +502,16 @@ try {
 Those are all null when the error carries no location, for example when the
 JavaScript code threw a plain value like `throw 'Bad'`.
 
+A promise rejection nobody handles fails the evaluation by default, even when
+the rest of the script succeeds. To report such rejections and keep the result,
+as browsers and React Native do, set a handler:
+
+```kotlin
+quickJs.unhandledRejectionHandler = { error ->
+    log.warn("Unhandled promise rejection", error)
+}
+```
+
 If you find other suspicious errors, please feel free to open an issue to report
 
 # Samples
@@ -507,6 +536,7 @@ You may need these tools to build and run this project:
 
 ```
 Copyright 2024 dokar3
+Copyright 2026 Kiryl Kvit
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -63,9 +63,11 @@ import quickjs.JS_UpdateStackTop
 import quickjs.qjs_interrupt_fired
 import quickjs.qjs_interrupt_free
 import quickjs.qjs_interrupt_install
+import quickjs.qjs_interrupt_poll
 import quickjs.qjs_interrupt_request
 import quickjs.qjs_interrupt_reset
 import quickjs.quickjs_version
+import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -168,6 +170,9 @@ actual class QuickJs private constructor(
         }
 
     actual var evaluationTimeoutMillis: Long = -1L
+
+    @Volatile
+    actual var unhandledRejectionHandler: ((Throwable) -> Unit)? = null
 
     actual fun interruptEvaluation() {
         interruptMutex.withLockSync {
@@ -430,7 +435,7 @@ actual class QuickJs private constructor(
             try {
                 val result = block(args.sliceArray(2..<args.size))
                 jsMutex.withLock {
-                    if (isClosed) return@withLock
+                    if (isClosed || session.isFinished) return@withLock
                     withEvaluationSession(session) {
                         context.invokeJsFunction(resolveFunc, arrayOf(result))
                     }
@@ -438,7 +443,7 @@ actual class QuickJs private constructor(
                 signalRuntimeProgress()
             } catch (e: Throwable) {
                 jsMutex.withLock {
-                    if (isClosed) return@withLock
+                    if (isClosed || session.isFinished) return@withLock
                     withEvaluationSession(session) {
                         context.invokeJsFunction(rejectFunc, arrayOf(e))
                     }
@@ -473,8 +478,9 @@ actual class QuickJs private constructor(
                     requestInterruptIfOpen()
                 }
             }
+            val session = EvaluationSession()
             try {
-                evalInSession(EvaluationSession(), isRoot = true, block)
+                evalInSession(session, isRoot = true, block)
             } catch (e: QuickJsException) {
                 // Cancellation wins over the interrupt error
                 coroutineContext.ensureActive()
@@ -485,6 +491,8 @@ actual class QuickJs private constructor(
                 }
                 throw e
             } finally {
+                // Jobs left behind by a failed or cancelled evaluation
+                withContext(NonCancellable) { cancelAsyncJobs(session) }
                 interruptOnCancel.complete()
                 resetInterruptState(0L)
             }
@@ -571,6 +579,7 @@ actual class QuickJs private constructor(
     ) {
         while (true) {
             val observedProgress = runtimeProgress.value
+            var drainStopped = false
             val (resultPending, executedJobs) = jsMutex.withLock {
                 if (isClosed) throw CancellationException("Already closed.")
                 withEvaluationSession(session) {
@@ -582,16 +591,27 @@ actual class QuickJs private constructor(
                         }
                         val executed = execResult == ExecuteJobResult.Success
                         executedAny = executedAny || executed
+                        if (executed && shouldStopDrainingJobs()) {
+                            drainStopped = true
+                            break
+                        }
                     } while (executed)
                     resultPromise.isPending(context) to executedAny
                 }
+            }
+            if (drainStopped) {
+                // Jobs the script queued stay queued, the runtime can't drop them
+                if (isRoot) cancelAsyncJobs(session)
+                if (isClosed) throw CancellationException("Already closed.")
+                throw QuickJsInterruptedException("InternalError: interrupted")
             }
 
             var hasUnhandledException = false
             val activeJobs = if (isRoot) {
                 jobsMutex.withLock {
                     hasUnhandledException = evaluation.exception != null ||
-                            session.unhandledRejections.isNotEmpty()
+                            (unhandledRejectionHandler == null &&
+                                    session.unhandledRejections.isNotEmpty())
                     asyncJobs.filter { it.session === session && it.job.isActive }
                         .map { it.job }
                 }
@@ -599,7 +619,7 @@ actual class QuickJs private constructor(
                 emptyList()
             }
             if (hasUnhandledException) {
-                activeJobs.forEach { it.cancel() }
+                cancelAsyncJobs(session)
                 return
             }
             val hasActiveJobs = activeJobs.isNotEmpty()
@@ -614,6 +634,25 @@ actual class QuickJs private constructor(
             if (!resultPending && !hasActiveJobs) continue
             runtimeProgress.first { it != observedProgress }
         }
+    }
+
+    /**
+     * Whether the pending job loop must stop: the instance was closed, or an
+     * interrupt was requested or the timeout passed. Checked between jobs because
+     * a job can queue the next one before it gets interrupted (dokar3/quickjs-kt#240).
+     */
+    private fun shouldStopDrainingJobs(): Boolean {
+        if (isClosed) return true
+        return interruptMutex.withLockSync {
+            interruptState?.let { qjs_interrupt_poll(it) != 0 } ?: false
+        }
+    }
+
+    private suspend fun cancelAsyncJobs(session: EvaluationSession) {
+        session.isFinished = true
+        jobsMutex.withLock {
+            asyncJobs.filter { it.session === session && it.job.isActive }
+        }.forEach { it.job.cancel() }
     }
 
     /** Returns whether the native bridge should install the custom module normalizer. */
@@ -664,7 +703,13 @@ actual class QuickJs private constructor(
         evaluation: EvaluationState,
         isRoot: Boolean,
     ) {
+        val rejectionHandler = if (isRoot) unhandledRejectionHandler else null
+        val reportedRejections = mutableListOf<Throwable>()
         val exception = jobsMutex.withLockSync {
+            if (rejectionHandler != null) {
+                reportedRejections += session.unhandledRejections.values
+                session.unhandledRejections.clear()
+            }
             evaluation.exception.also { evaluation.exception = null }
                 ?: if (isRoot) {
                     session.unhandledRejections.entries.firstOrNull()?.let {
@@ -675,6 +720,7 @@ actual class QuickJs private constructor(
                 }
                 ?: evalException.also { evalException = null }
         }
+        reportedRejections.forEach { rejectionHandler?.invoke(it) }
         if (exception != null) throw exception
     }
 
@@ -781,6 +827,14 @@ actual class QuickJs private constructor(
     private class EvaluationSession : AbstractCoroutineContextElement(Key) {
         val evaluations = mutableMapOf<Long, EvaluationState>()
         val unhandledRejections = linkedMapOf<Long, Throwable>()
+
+        /**
+         * Set once the root evaluation stops awaiting its jobs. Jobs still running
+         * then must not settle their promises: the reactions would only run in the
+         * next evaluation's job loop and fail it with this one's errors.
+         */
+        @Volatile
+        var isFinished = false
 
         companion object Key : CoroutineContext.Key<EvaluationSession>
     }
