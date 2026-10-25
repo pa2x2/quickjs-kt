@@ -171,6 +171,9 @@ actual class QuickJs private constructor(
 
     actual var evaluationTimeoutMillis: Long = -1L
 
+    @Volatile
+    actual var unhandledRejectionHandler: ((Throwable) -> Unit)? = null
+
     actual fun interruptEvaluation() {
         interruptMutex.withLockSync {
             ensureNotClosed()
@@ -607,7 +610,8 @@ actual class QuickJs private constructor(
             val activeJobs = if (isRoot) {
                 jobsMutex.withLock {
                     hasUnhandledException = evaluation.exception != null ||
-                            session.unhandledRejections.isNotEmpty()
+                            (unhandledRejectionHandler == null &&
+                                    session.unhandledRejections.isNotEmpty())
                     asyncJobs.filter { it.session === session && it.job.isActive }
                         .map { it.job }
                 }
@@ -699,7 +703,13 @@ actual class QuickJs private constructor(
         evaluation: EvaluationState,
         isRoot: Boolean,
     ) {
+        val rejectionHandler = if (isRoot) unhandledRejectionHandler else null
+        val reportedRejections = mutableListOf<Throwable>()
         val exception = jobsMutex.withLockSync {
+            if (rejectionHandler != null) {
+                reportedRejections += session.unhandledRejections.values
+                session.unhandledRejections.clear()
+            }
             evaluation.exception.also { evaluation.exception = null }
                 ?: if (isRoot) {
                     session.unhandledRejections.entries.firstOrNull()?.let {
@@ -710,6 +720,7 @@ actual class QuickJs private constructor(
                 }
                 ?: evalException.also { evalException = null }
         }
+        reportedRejections.forEach { rejectionHandler?.invoke(it) }
         if (exception != null) throw exception
     }
 

@@ -128,6 +128,18 @@ expect class QuickJs {
     var evaluationTimeoutMillis: Long
 
     /**
+     * Receives the promise rejections still unhandled when a top-level
+     * evaluation finishes, once each, instead of the evaluation failing with the
+     * first of them. Called on the evaluating coroutine. An error thrown by the
+     * evaluated code itself still fails the evaluation.
+     *
+     * Null (the default) fails the evaluation as soon as a rejection is found
+     * unhandled, which includes a rejection handled only after an `await` of an
+     * async function binding.
+     */
+    var unhandledRejectionHandler: ((Throwable) -> Unit)?
+
+    /**
      * Interrupt the running evaluation, failing it with a
      * [QuickJsInterruptedException]. Works even on busy JavaScript like an
      * infinite loop, can be called from any thread, and does nothing when no

@@ -193,4 +193,34 @@ class AsyncErrorHandlingTest {
             }
         }
     }
+
+    @Test
+    fun unhandledRejectionHandlerReportsInsteadOfFailing() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                asyncFunction("delay") { delay((it[0] as Number).toLong()) }
+                val reported = mutableListOf<Throwable>()
+                unhandledRejectionHandler = { reported += it }
+
+                // Reported, and the evaluation still returns its result
+                assertEquals(
+                    42,
+                    evaluate<Int>("Promise.reject(new Error('stray')); await delay(10); 42"),
+                )
+                // Handled after awaiting a binding: neither reported nor failing
+                assertEquals(
+                    1,
+                    evaluate<Int>(
+                        "const late = Promise.reject(new Error('late')); await delay(10); late.catch(() => {}); 1"
+                    ),
+                )
+                // The evaluated code's own error still fails the evaluation
+                assertFailsWith<QuickJsException> {
+                    evaluate<Any?>("await delay(1); throw new Error('own')")
+                }
+                assertEquals(1, reported.size)
+                assertContains(reported.single().message!!, "stray")
+            }
+        }
+    }
 }

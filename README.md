@@ -483,6 +483,16 @@ try {
 Those are all null when the error carries no location, for example when the
 JavaScript code threw a plain value like `throw 'Bad'`.
 
+A promise rejection nobody handles fails the evaluation by default, even when
+the rest of the script succeeds. To report such rejections and keep the result,
+as browsers and React Native do, set a handler:
+
+```kotlin
+quickJs.unhandledRejectionHandler = { error ->
+    log.warn("Unhandled promise rejection", error)
+}
+```
+
 If you find other suspicious errors, please feel free to open an issue to report
 
 # Samples
