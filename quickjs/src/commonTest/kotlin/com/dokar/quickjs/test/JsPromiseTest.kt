@@ -1,10 +1,14 @@
 package com.dokar.quickjs.test
 
+import com.dokar.quickjs.QuickJsUnsettledPromiseException
+import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
 import com.dokar.quickjs.quickJs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class JsPromiseTest {
     @Test
@@ -67,6 +71,22 @@ class JsPromiseTest {
             )
 
             assertEquals(listOf("Start", "End", "Then"), logs)
+        }
+    }
+
+    @Test
+    fun resultNothingCanSettleFails() = runTest {
+        quickJs {
+            asyncFunction("tick") { delay(10) }
+
+            assertFailsWith<QuickJsUnsettledPromiseException> {
+                evaluate<Any?>("await new Promise(() => {})")
+            }
+            // Pending only once the async function it waited on has returned
+            assertFailsWith<QuickJsUnsettledPromiseException> {
+                evaluate<Any?>("await tick().then(() => new Promise(() => {}))")
+            }
+            assertEquals(1, evaluate<Int>("1"))
         }
     }
 }

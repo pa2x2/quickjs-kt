@@ -1,6 +1,8 @@
 package com.dokar.quickjs
 
+import com.dokar.quickjs.binding.asyncFunction
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +19,8 @@ class EvaluationCleanupJvmTest {
     @Test
     fun cancelledEvaluationReleasesResultHandleBeforeRegistration() = runTest {
         val quickJs = QuickJs.create(StandardTestDispatcher(testScheduler))
+        // Keeps an evaluation waiting; a promise nothing settles would fail it at once
+        quickJs.asyncFunction("hang") { awaitCancellation() }
         try {
             val mutexLocked = CompletableDeferred<Unit>()
             val releaseMutex = CompletableDeferred<Unit>()
@@ -43,7 +47,7 @@ class EvaluationCleanupJvmTest {
             cancelledEvaluation.join()
 
             val nextEvaluation = launch {
-                quickJs.evaluate<Any?>("await new Promise(() => {})")
+                quickJs.evaluate<Any?>("await hang()")
             }
             runCurrent()
             assertEquals(setOf(0L), quickJs.activeEvaluateResults())
@@ -58,9 +62,11 @@ class EvaluationCleanupJvmTest {
     @Test
     fun cancelledEvaluationReleasesResultHandleWhenJobsMutexIsContended() = runTest {
         val quickJs = QuickJs.create(StandardTestDispatcher(testScheduler))
+        // Keeps an evaluation waiting; a promise nothing settles would fail it at once
+        quickJs.asyncFunction("hang") { awaitCancellation() }
         try {
             val evaluation = launch {
-                quickJs.evaluate<Any?>("await new Promise(() => {})")
+                quickJs.evaluate<Any?>("await hang()")
             }
             runCurrent()
             assertEquals(1, quickJs.activeEvaluateResults().size)

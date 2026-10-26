@@ -37,6 +37,15 @@ class QuickJsInterruptedException(
     message: String?,
 ) : QuickJsException(message)
 
+/**
+ * Thrown when an evaluation's result is a promise that nothing left can settle:
+ * no job is queued and no async function the evaluation started is running.
+ * Without it the evaluation would wait forever.
+ */
+class QuickJsUnsettledPromiseException(
+    message: String?,
+) : QuickJsException(message)
+
 @PublishedApi
 internal fun qjsError(message: String): Nothing = throw QuickJsException(message)
 

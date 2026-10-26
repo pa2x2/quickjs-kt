@@ -630,6 +630,13 @@ actual class QuickJs private constructor(
             if (!resultPending && !hasActiveJobs && progressUnchanged) {
                 return
             }
+            // The queue is drained and no async function of this evaluation is
+            // running, so nothing is left that could settle the result
+            if (isRoot && resultPending && !hasActiveJobs && progressUnchanged) {
+                throw QuickJsUnsettledPromiseException(
+                    "The result is a promise that nothing can settle any more"
+                )
+            }
 
             if (!resultPending && !hasActiveJobs) continue
             runtimeProgress.first { it != observedProgress }
