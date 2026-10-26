@@ -27,4 +27,20 @@ class UInt8ArrayMapping {
             assertContentEquals(array, evaluate<UByteArray>("getBuffer()"))
         }
     }
+
+    @OptIn(ExperimentalUnsignedTypes::class)
+    @Test
+    fun viewsOnPartOfABuffer() = runTest {
+        quickJs {
+            var received: List<UByte>? = null
+            function("receive") { received = (it[0] as UByteArray).toList() }
+
+            evaluate<Any?>("receive(new Uint8Array([1, 2, 3, 4, 5]).subarray(1, 3))")
+            assertContentEquals(listOf<UByte>(2u, 3u), received)
+            assertContentEquals(
+                byteArrayOf(4, 5),
+                evaluate<ByteArray>("new Int8Array([1, 2, 3, 4, 5]).subarray(3)"),
+            )
+        }
+    }
 }

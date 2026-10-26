@@ -370,16 +370,22 @@ jobject object_to_java_js_object(JNIEnv *env, JSContext *context, JSValue value)
 }
 
 jobject js_int8array_to_java_byte_array(JNIEnv *env, JSContext *context, JSValue value) {
-    JSValue buffer = JS_GetPropertyStr(context, value, "buffer");
+    // Only the bytes the array views: a subarray shares a larger buffer
+    size_t offset, length, bytes_per_element;
+    JSValue buffer = JS_GetTypedArrayBuffer(context, value, &offset, &length, &bytes_per_element);
+    if (JS_IsException(buffer)) {
+        jni_throw_qjs_exception(env, "Cannot read array buffer.");
+        return NULL;
+    }
     size_t size;
     uint8_t *c_buffer = JS_GetArrayBuffer(context, &size, buffer);
-    if (c_buffer == NULL) {
+    if (c_buffer == NULL || offset + length > size) {
         JS_FreeValue(context, buffer);
         jni_throw_qjs_exception(env, "Cannot read array buffer.");
         return NULL;
     }
-    jbyteArray array = (*env)->NewByteArray(env, size);
-    (*env)->SetByteArrayRegion(env, array, 0, size, (jbyte *) c_buffer);
+    jbyteArray array = (*env)->NewByteArray(env, length);
+    (*env)->SetByteArrayRegion(env, array, 0, length, (jbyte *) (c_buffer + offset));
     JS_FreeValue(context, buffer);
     return array;
 }

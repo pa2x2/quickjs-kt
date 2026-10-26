@@ -18,6 +18,7 @@ import kotlinx.cinterop.allocArrayOfPointersTo
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
+import kotlinx.cinterop.plus
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.toKStringFromUtf8
@@ -43,6 +44,7 @@ import quickjs.JS_GetGlobalObject
 import quickjs.JS_GetOwnPropertyNames
 import quickjs.JS_GetProperty
 import quickjs.JS_GetPropertyStr
+import quickjs.JS_GetTypedArrayBuffer
 import quickjs.JS_GetPropertyUint32
 import quickjs.JS_IsArray
 import quickjs.JS_IsError
@@ -251,15 +253,20 @@ private fun jsInt8ArrayToKtByteArray(
     context: CPointer<JSContext>,
     array: CValue<JSValue>
 ): ByteArray = memScoped {
+    // Only the bytes the array views: a subarray shares a larger buffer
+    val offset = alloc<size_tVar>()
     val length = alloc<size_tVar>()
-    val arrayBuffer = JS_GetPropertyStr(context, array, "buffer")
-    val cBuffer = JS_GetArrayBuffer(context, length.ptr, arrayBuffer)
-    if (cBuffer == null) {
+    val bytesPerElement = alloc<size_tVar>()
+    val arrayBuffer = JS_GetTypedArrayBuffer(context, array, offset.ptr, length.ptr, bytesPerElement.ptr)
+    if (JS_IsException(arrayBuffer) != 0) qjsError("Cannot read array buffer.")
+    val size = alloc<size_tVar>()
+    val cBuffer = JS_GetArrayBuffer(context, size.ptr, arrayBuffer)
+    if (cBuffer == null || offset.value + length.value > size.value) {
         JS_FreeValue(context, arrayBuffer)
         qjsError("Cannot read array buffer.")
     }
     try {
-        cBuffer.readBytes(length.value.toInt())
+        (cBuffer + offset.value.toLong())!!.readBytes(length.value.toInt())
     } finally {
         JS_FreeValue(context, arrayBuffer)
     }
