@@ -14,9 +14,54 @@ concurrency:
 
 jobs:
   build:
+    name: build (${{ matrix.name }})
     strategy:
       matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        include:
+          - name: ubuntu-latest
+            os: ubuntu-latest
+            setup_graalvm: true
+            run: |
+              ./gradlew publishToMavenLocal
+              ./gradlew build
+
+          - name: windows-latest
+            os: windows-latest
+            setup_graalvm: true
+            run: |
+              ./gradlew :quickjs:publishKotlinMultiplatformPublicationToMavenLocal \
+                        :quickjs:publishJvmPublicationToMavenLocal \
+                        :quickjs:publishMingwX64PublicationToMavenLocal
+              ./gradlew jvmTest mingwX64Test \
+                        :samples:repl:linkDebugExecutableMingwX64 \
+                        :integration-test:general:check \
+                        :integration-test:native-access:check
+
+          - name: macos-latest - macOS
+            os: macos-latest
+            setup_graalvm: true
+            run: |
+              ./gradlew :quickjs:publishKotlinMultiplatformPublicationToMavenLocal \
+                        :quickjs:publishJvmPublicationToMavenLocal \
+                        :quickjs:publishMacosArm64PublicationToMavenLocal \
+                        -Pquickjs.targetGroup=macos
+              ./gradlew jvmTest macosArm64Test \
+                        :samples:repl:linkDebugExecutableMacosArm64 \
+                        :integration-test:general:check \
+                        :integration-test:native-access:check \
+                        -Pquickjs.targetGroup=macos
+
+          - name: macos-latest - iOS
+            os: macos-latest
+            setup_graalvm: false
+            run: |
+              ./gradlew iosSimulatorArm64Test compileKotlinIosArm64 -Pquickjs.targetGroup=ios
+
+          - name: macos-latest - tvOS
+            os: macos-latest
+            setup_graalvm: false
+            run: |
+              ./gradlew tvosSimulatorArm64Test compileKotlinTvosArm64 -Pquickjs.targetGroup=tvos
 
     runs-on: ${{ matrix.os }}
     env:
@@ -28,6 +73,7 @@ jobs:
           submodules: recursive
 
       - name: Setup GraalVM
+        if: matrix.setup_graalvm
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '25'
@@ -36,8 +82,16 @@ jobs:
           native-image-job-reports: 'true'
 
       - name: Export GRAALVM_HOME
+        if: matrix.setup_graalvm
         shell: bash
         run: echo "GRAALVM_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+
+      - name: Setup JDK
+        if: ${{ !matrix.setup_graalvm }}
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
       # Build system for C
       - name: Setup CMake
@@ -53,15 +107,6 @@ jobs:
         with:
           version: 0.12.0
 
-      # Run js/ts scripts
-      - name: Set Bun.js
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install multiplatform JDKs
-        run: bun scripts/setupMultiplatformJdks.ts
-
       - uses: gradle/actions/setup-gradle@v6
 
       - name: Grant execute permission for scripts
@@ -72,6 +117,5 @@ jobs:
           chmod +x quickjs/native/cmake/zig-ranlib.sh
 
       - name: Build
-        run: |
-          ./gradlew publishToMavenLocal
-          ./gradlew build
+        shell: bash
+        run: ${{ matrix.run }}

@@ -223,4 +223,15 @@ class AsyncErrorHandlingTest {
             }
         }
     }
+
+    @Test
+    fun evaluateAfterUnhandledAsyncRejection() = runTest {
+        quickJs(Dispatchers.Default) {
+            asyncFunction("alwaysFails") { error("Expected rejection") }
+            assertFails {
+                evaluate<Any?>("alwaysFails()")
+            }
+            assertEquals(2, evaluate<Int>("1 + 1"))
+        }
+    }
 }

@@ -26,12 +26,16 @@ void qjs_interrupt_reset(void *state, int64_t timeout_ms);
 /* 1 if the handler aborted an evaluation since the last reset. */
 int qjs_interrupt_fired(void *state);
 
-/*
- * Check the request and deadline outside of JavaScript execution, the way the
- * interrupt handler does, and mark the state fired when either applies. Lets
- * the pending job loop stop between jobs: a job that queues the next job before
- * it gets interrupted would otherwise keep the loop running forever.
- */
+/* Poll the interrupt state outside the bytecode loop, latching fired if due. */
 int qjs_interrupt_poll(void *state);
+
+/* If an interrupt is due, latch fired, replace any pending exception with an uncatchable JS InternalError("interrupted"), and return 1. */
+int qjs_interrupt_check_or_throw(JSContext *ctx, void *state);
+
+/* Post-callback check: returns result unchanged, or frees it and returns JS_EXCEPTION if an interrupt is due. */
+JSValue qjs_interrupt_check_result(JSContext *ctx, void *state, JSValue result);
+
+/* Drain pending runtime jobs without executing queued JS functions, then restore the max stack size. */
+void qjs_interrupt_clear_pending_jobs(JSRuntime *rt, int64_t max_stack_size);
 
 #endif // QJS_KT_QUICKJS_INTERRUPT_H

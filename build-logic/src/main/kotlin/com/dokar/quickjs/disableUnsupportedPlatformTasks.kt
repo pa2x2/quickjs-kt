@@ -3,9 +3,13 @@ package com.dokar.quickjs
 import org.gradle.api.Project
 
 fun Project.disableUnsupportedPlatformTasks() {
-    val isPublishing = gradle.startParameter.taskNames.any {
-        it.contains("publish", ignoreCase = true)
+    val taskNames = gradle.startParameter.taskNames
+    val isPublishing = taskNames.any {
+        it.contains("publish", ignoreCase = true) &&
+                !it.contains("MavenLocal", ignoreCase = true)
     }
+
+    val targetGroup = providers.gradleProperty("quickjs.targetGroup").orNull?.lowercase()
 
     tasks.configureEach {
         val taskName = name.lowercase()
@@ -18,8 +22,26 @@ fun Project.disableUnsupportedPlatformTasks() {
             taskName.contains("iosx64") -> Platform.ios_x64
             taskName.contains("iosarm64") -> Platform.ios_aarch64
             taskName.contains("iossimulatorarm64") -> Platform.ios_simulator_aarch64
+            taskName.contains("tvosarm64") -> Platform.tvos_aarch64
+            taskName.contains("tvossimulatorarm64") -> Platform.tvos_simulator_aarch64
             else -> null
         } ?: return@configureEach
+
+        if (targetGroup != null) {
+            val matchesGroup = when (targetGroup) {
+                "macos" -> platform == Platform.macos_x64 || platform == Platform.macos_aarch64
+                "ios" -> platform == Platform.ios_x64 ||
+                        platform == Platform.ios_aarch64 ||
+                        platform == Platform.ios_simulator_aarch64
+                "tvos" -> platform == Platform.tvos_aarch64 ||
+                        platform == Platform.tvos_simulator_aarch64
+                else -> error("Unknown quickjs.targetGroup: '$targetGroup'")
+            }
+            if (!matchesGroup) {
+                enabled = false
+                return@configureEach
+            }
+        }
 
         enabled = if (isPublishing) {
             when (currentPlatform) {
@@ -44,7 +66,9 @@ fun Project.disableUnsupportedPlatformTasks() {
                 Platform.macos_aarch64 -> currentPlatform == Platform.macos_aarch64
                 Platform.ios_x64 -> currentPlatform == Platform.macos_x64
                 Platform.ios_aarch64,
-                Platform.ios_simulator_aarch64 -> currentPlatform == Platform.macos_aarch64
+                Platform.ios_simulator_aarch64,
+                Platform.tvos_aarch64,
+                Platform.tvos_simulator_aarch64 -> currentPlatform == Platform.macos_aarch64
             }
         }
     }

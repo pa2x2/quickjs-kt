@@ -175,8 +175,11 @@ private fun invokeGetter(
     funcData ?: return@memScoped JsException()
 
     val (propName, quickJs, objectHandle) = BindingFunctionData.fromJsValues(ctx, funcData)
+    if (quickJs.checkInterruptOrThrow(ctx)) {
+        return@memScoped JsException()
+    }
 
-    try {
+    val result = try {
         quickJs
             .onCallBindingGetter(parentHandle = objectHandle, name = propName)
             .toJsValue(context = ctx)
@@ -184,6 +187,7 @@ private fun invokeGetter(
         JS_Throw(ctx, ktErrorToJsError(ctx, e))
         JsException()
     }
+    quickJs.checkInterruptResult(ctx, result)
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -204,10 +208,12 @@ private fun invokeSetter(
     }
 
     val (propName, quickJs, objectHandle) = BindingFunctionData.fromJsValues(ctx, funcData)
+    if (quickJs.checkInterruptOrThrow(ctx)) {
+        return@memScoped JsException()
+    }
 
-    val value = argv!![0].readValue().toKtValue(ctx)
-
-    try {
+    val result = try {
+        val value = argv!![0].readValue().toKtValue(ctx)
         quickJs.onCallBindingSetter(
             parentHandle = objectHandle,
             name = propName,
@@ -218,6 +224,7 @@ private fun invokeSetter(
         JS_Throw(ctx, ktErrorToJsError(ctx, e))
         JsException()
     }
+    quickJs.checkInterruptResult(ctx, result)
 }
 
 @OptIn(ExperimentalForeignApi::class)

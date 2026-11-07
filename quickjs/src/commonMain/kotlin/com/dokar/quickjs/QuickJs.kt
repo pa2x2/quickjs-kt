@@ -131,11 +131,13 @@ expect class QuickJs {
      * Receives the promise rejections still unhandled when a top-level
      * evaluation finishes, once each, instead of the evaluation failing with the
      * first of them. Called on the evaluating coroutine. An error thrown by the
-     * evaluated code itself still fails the evaluation.
+     * evaluated code itself still fails the evaluation. An interrupted evaluation
+     * reports none: the queued jobs that could still have handled them are
+     * dropped.
      *
-     * Null (the default) fails the evaluation as soon as a rejection is found
-     * unhandled, which includes a rejection handled only after an `await` of an
-     * async function binding.
+     * Null (the default) fails the evaluation when the queued jobs have run and
+     * a rejection is still unhandled, which includes a rejection handled only
+     * after an `await` of an async function binding.
      */
     var unhandledRejectionHandler: ((Throwable) -> Unit)?
 
