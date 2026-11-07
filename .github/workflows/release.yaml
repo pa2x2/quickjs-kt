@@ -66,20 +66,21 @@ jobs:
           echo "group=$group" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # A task name containing 'publish' makes the build cross-compile every desktop JNI library
-      # in release mode; testing in the same invocation runs the tests on the library that ships.
+      # Publishing to a repository other than Maven Local makes the build cross-compile every
+      # desktop JNI library in release mode; testing in the same invocation runs the tests on the
+      # library that ships.
       - name: Test and build the artifacts
         run: >-
           ./gradlew :quickjs:jvmTest
-          :quickjs:publishAndroidReleasePublicationToMavenLocal
-          :quickjs:publishJvmPublicationToMavenLocal
+          :quickjs:publishAndroidReleasePublicationToReleaseStagingRepository
+          :quickjs:publishJvmPublicationToReleaseStagingRepository
 
       - name: Stage and check the artifacts
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GROUP: ${{ steps.version.outputs.group }}
         run: |
-          repo="$HOME/.m2/repository/${GROUP//.//}"
+          repo="quickjs/build/release-staging/${GROUP//.//}"
           mkdir dist
           cp "$repo/quickjs-kt-android/$VERSION/quickjs-kt-android-$VERSION.aar" dist/
           cp "$repo/quickjs-kt-jvm/$VERSION/quickjs-kt-jvm-$VERSION.jar" dist/
