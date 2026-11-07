@@ -260,7 +260,9 @@ class EvaluationInterruptTest {
 
     /**
      * Runs [evaluation] outside the test's scope, so a hung evaluation fails the
-     * test instead of blocking it, then checks that close() returns as well.
+     * test instead of blocking it. Then checks that the jobs it queued were
+     * dropped rather than left for the next evaluation to run, and that close()
+     * returns as well.
      */
     private suspend fun assertStopsAndCloses(
         quickJs: QuickJs,
@@ -271,6 +273,8 @@ class EvaluationInterruptTest {
         val evaluated = scope.async { evaluation() }
         afterLaunch()
         withTimeout(5_000) { evaluated.await() }
+        val next = scope.async { quickJs.evaluate<Int>("1 + 1") }
+        assertEquals(2, withTimeout(5_000) { next.await() })
         val closeJob = scope.launch { quickJs.close() }
         withTimeout(5_000) { closeJob.join() }
     }
