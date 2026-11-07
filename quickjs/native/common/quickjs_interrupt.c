@@ -26,24 +26,29 @@ static int64_t qjs_now_ms(void) {
 #endif
 }
 
-static int qjs_interrupt_check(QjsInterruptState *state) {
+static int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
+    QjsInterruptState *state = (QjsInterruptState *) opaque;
     if (state == NULL) {
         return 0;
     }
-    if (state->requested) {
-        state->fired = 1;
-        return 1;
+    int fire = state->fired || state->requested;
+    if (!fire) {
+        int64_t deadline = state->deadline_ms;
+        fire = deadline > 0 && qjs_now_ms() >= deadline;
     }
-    int64_t deadline = state->deadline_ms;
-    if (deadline > 0 && qjs_now_ms() >= deadline) {
-        state->fired = 1;
-        return 1;
+    if (!fire) {
+        return 0;
     }
-    return 0;
-}
-
-static int qjs_interrupt_handler(JSRuntime *rt, void *opaque) {
-    return qjs_interrupt_check((QjsInterruptState *) opaque);
+    state->fired = 1;
+    if (rt != NULL) {
+        // Promise constructors and async functions swallow the uncatchable
+        // error into a rejected promise, and QuickJS rearms its interrupt
+        // counter on every poll. A caller looping over them would never see
+        // the interrupt, so make any further JS call fail on entry until
+        // qjs_interrupt_clear_pending_jobs() restores the stack size.
+        JS_SetMaxStackSize(rt, 1);
+    }
+    return 1;
 }
 
 void *qjs_interrupt_install(JSRuntime *rt) {
@@ -80,5 +85,57 @@ int qjs_interrupt_fired(void *state) {
 }
 
 int qjs_interrupt_poll(void *state) {
-    return qjs_interrupt_check((QjsInterruptState *) state);
+    return qjs_interrupt_handler(NULL, state);
+}
+
+int qjs_interrupt_check_or_throw(JSContext *ctx, void *state) {
+    if (ctx == NULL || !qjs_interrupt_poll(state)) {
+        return 0;
+    }
+    // Replace any pending (catchable) error, e.g. one raised by a host callback.
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    JS_ThrowInternalError(ctx, "interrupted");
+    JS_SetUncatchableException(ctx, 1);
+    return 1;
+}
+
+JSValue qjs_interrupt_check_result(JSContext *ctx, void *state, JSValue result) {
+    if (!qjs_interrupt_check_or_throw(ctx, state)) {
+        return result;
+    }
+    JS_FreeValue(ctx, result);
+    return JS_EXCEPTION;
+}
+
+static char *qjs_abort_module_normalize(JSContext *ctx,
+                                        const char *module_base_name,
+                                        const char *module_name,
+                                        void *opaque) {
+    (void) module_base_name;
+    (void) module_name;
+    (void) opaque;
+    JS_ThrowInternalError(ctx, "interrupted");
+    JS_SetUncatchableException(ctx, 1);
+    return NULL;
+}
+
+void qjs_interrupt_clear_pending_jobs(JSRuntime *rt, int64_t max_stack_size) {
+    if (rt == NULL) {
+        return;
+    }
+    if (JS_IsJobPending(rt)) {
+        JS_SetModuleLoaderFunc(rt, qjs_abort_module_normalize, NULL, NULL);
+        JS_UpdateStackTop(rt);
+        JS_SetMaxStackSize(rt, 1);
+        while (JS_IsJobPending(rt)) {
+            JSContext *ctx = NULL;
+            JS_ExecutePendingJob(rt, &ctx);
+            if (ctx != NULL) {
+                JS_FreeValue(ctx, JS_GetException(ctx));
+            }
+        }
+    }
+    // Always restore: the interrupt handler may have limited the stack.
+    JS_SetMaxStackSize(rt, max_stack_size > 0 ? (size_t) max_stack_size : 0);
+    JS_UpdateStackTop(rt);
 }

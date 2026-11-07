@@ -6,6 +6,11 @@ import org.gradle.process.ExecOperations
 import java.io.File
 import java.util.Properties
 
+/**
+ * Configures and builds the native QuickJS library for [platform] with CMake - shared or static,
+ * with or without the JNI bridge, in [release] (MinSizeRel) or debug (Debug) - and, when [outputDir]
+ * is given, copies the built library there.
+ */
 internal fun Project.buildQuickJsNativeLibrary(
     cmakeFile: File,
     platform: Platform,
@@ -81,13 +86,19 @@ internal fun Project.buildQuickJsNativeLibrary(
 
             Platform.ios_aarch64,
             Platform.ios_x64,
-            Platform.ios_simulator_aarch64 -> commonArgs + xcode
+            Platform.ios_simulator_aarch64,
+            Platform.tvos_aarch64,
+            Platform.tvos_simulator_aarch64 -> commonArgs + xcode
         }
     }
 
+    // The Xcode generator is multi-config and ignores CMAKE_BUILD_TYPE when choosing
+    // what to build, so pass the config to cmake (before '--') or it silently builds Debug.
     val buildArgs = when (platform) {
         Platform.ios_aarch64 -> arrayOf(
             commonArgs[1],
+            "--config",
+            buildType,
             "--",
             "-sdk",
             "iphoneos"
@@ -96,9 +107,29 @@ internal fun Project.buildQuickJsNativeLibrary(
         Platform.ios_x64,
         Platform.ios_simulator_aarch64 -> arrayOf(
             commonArgs[1],
+            "--config",
+            buildType,
             "--",
             "-sdk",
             "iphonesimulator"
+        )
+
+        Platform.tvos_aarch64 -> arrayOf(
+            commonArgs[1],
+            "--config",
+            buildType,
+            "--",
+            "-sdk",
+            "appletvos"
+        )
+
+        Platform.tvos_simulator_aarch64 -> arrayOf(
+            commonArgs[1],
+            "--config",
+            buildType,
+            "--",
+            "-sdk",
+            "appletvsimulator"
         )
 
         else -> arrayOf(commonArgs[1])
@@ -196,6 +227,10 @@ internal fun Project.buildQuickJsNativeLibrary(
 
                 Platform.ios_simulator_aarch64 -> "$buildType-iphonesimulator/" to "a"
 
+                Platform.tvos_aarch64 -> "$buildType-appletvos/" to "a"
+
+                Platform.tvos_simulator_aarch64 -> "$buildType-appletvsimulator/" to "a"
+
                 else -> "" to "a"
             }
         }
@@ -222,18 +257,28 @@ internal fun Project.buildQuickJsNativeLibrary(
 
 private fun Project.windowX64JavaHome() =
     envVarOrLocalPropOf("JAVA_HOME_WINDOWS_X64")
+        ?: currentJavaHomeIfMatching(Platform.windows_x64)
 
 private fun Project.linuxX64JavaHome() =
     envVarOrLocalPropOf("JAVA_HOME_LINUX_X64")
+        ?: currentJavaHomeIfMatching(Platform.linux_x64)
 
 private fun Project.linuxAarch64JavaHome() =
     envVarOrLocalPropOf("JAVA_HOME_LINUX_AARCH64")
+        ?: currentJavaHomeIfMatching(Platform.linux_aarch64)
 
 private fun Project.macosX64JavaHome() =
     envVarOrLocalPropOf("JAVA_HOME_MACOS_X64")
+        ?: currentJavaHomeIfMatching(Platform.macos_x64)
 
 private fun Project.macosAarch64JavaHome() =
     envVarOrLocalPropOf("JAVA_HOME_MACOS_AARCH64")
+        ?: currentJavaHomeIfMatching(Platform.macos_aarch64)
+
+private fun Project.currentJavaHomeIfMatching(platform: Platform): String? {
+    if (currentPlatform != platform) return null
+    return envVarOrLocalPropOf("JAVA_HOME") ?: System.getProperty("java.home")
+}
 
 private fun Project.envVarOrLocalPropOf(key: String): String? {
     val localProperties = Properties()

@@ -106,8 +106,11 @@ private fun invokeFunction(
     funcData ?: return@memScoped JsException()
 
     val (funcName, quickJs, objectHandle) = BindingFunctionData.fromJsValues(ctx, funcData)
+    if (quickJs.checkInterruptOrThrow(ctx)) {
+        return@memScoped JsException()
+    }
 
-    try {
+    val result = try {
         val invokeArgs = Array(argc) { argv!![it].readValue().toKtValue(ctx) }
         quickJs
             .onCallBindingFunction(
@@ -120,6 +123,7 @@ private fun invokeFunction(
         JS_Throw(ctx, ktErrorToJsError(ctx, e))
         JsException()
     }
+    quickJs.checkInterruptResult(ctx, result)
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -136,6 +140,9 @@ private fun invokeAsyncFunction(
     funcData ?: return@memScoped JsException()
 
     val (funcName, quickJs, objectHandle) = BindingFunctionData.fromJsValues(ctx, funcData)
+    if (quickJs.checkInterruptOrThrow(ctx)) {
+        return@memScoped JsException()
+    }
 
     val functions = allocArray<JSValue>(2)
     val promise = JS_NewPromiseCapability(ctx, functions)
@@ -163,8 +170,8 @@ private fun invokeAsyncFunction(
         )
     } catch (e: Throwable) {
         JS_Throw(ctx, ktErrorToJsError(ctx, e))
-        return@memScoped JsException()
+        return@memScoped quickJs.checkInterruptResult(ctx, JsException())
     }
 
-    JS_DupValue(ctx, promise)
+    quickJs.checkInterruptResult(ctx, JS_DupValue(ctx, promise))
 }

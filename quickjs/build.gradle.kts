@@ -23,6 +23,8 @@ kotlin {
     iosX64()
     iosArm64()
     iosSimulatorArm64()
+    tvosArm64()
+    tvosSimulatorArm64()
 
     applyDefaultHierarchyTemplate()
 
@@ -147,5 +149,16 @@ afterEvaluate {
     }
     tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
         enabled = false
+    }
+}
+
+// The Release workflow collects the AAR and the jar from here. Publishing to a repository other
+// than Maven Local is what makes the build cross-compile every desktop JNI library in release mode.
+publishing {
+    repositories {
+        maven {
+            name = "releaseStaging"
+            url = uri(layout.buildDirectory.dir("release-staging"))
+        }
     }
 }

@@ -8,8 +8,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -17,6 +19,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class EvaluationInterruptTest {
@@ -94,6 +97,123 @@ class EvaluationInterruptTest {
     }
 
     @Test
+    fun interruptEvaluationWithNonStopJobQueuing() = runTest {
+        withContext(Dispatchers.Default) {
+            val jsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val quickJs = QuickJs.create(Dispatchers.Default)
+            try {
+                val started = CompletableDeferred<Unit>()
+                quickJs.function("started") { started.complete(Unit) }
+                val evalJob = jsScope.async {
+                    assertFailsWith<QuickJsInterruptedException> {
+                        quickJs.evaluate<Unit>(
+                            """
+                            function f() {
+                                Promise.resolve().then(f);
+                                while (true) {}
+                            }
+                            started();
+                            f();
+                            """.trimIndent()
+                        )
+                    }
+                }
+                started.await()
+                quickJs.interruptEvaluation()
+                withTimeout(5_000) { evalJob.await() }
+                assertEquals(2, quickJs.evaluate<Int>("1 + 1"))
+            } finally {
+                // Skip potential dead blockings
+                withTimeout(1_000) {
+                    jsScope.async { quickJs.close() }.await()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun interruptInsideSyncBindingCannotBeCaughtByJs() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                function("interruptMe") { interruptEvaluation() }
+                function("noop") {}
+                assertFailsWith<QuickJsInterruptedException> {
+                    evaluate<Unit>(
+                        """
+                        globalThis.caught = false;
+                        try {
+                            noop({ get a() { interruptMe(); return 1; } });
+                        } catch (e) {
+                            globalThis.caught = true;
+                        }
+                        """.trimIndent()
+                    )
+                }
+                assertFalse(evaluate<Boolean>("globalThis.caught"))
+            }
+        }
+    }
+
+    @Test
+    fun interruptAfterUnhandledRejectionThrowsInterruptedException() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                function("fail") { throw IllegalStateException("boom") }
+                function("interruptMe") { interruptEvaluation() }
+                assertFailsWith<QuickJsInterruptedException> {
+                    evaluate<Unit>(
+                        """
+                        Promise.resolve().then(() => fail());
+                        Promise.resolve().then(() => { interruptMe(); while (true) {} });
+                        """.trimIndent()
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun interruptLoopWithInnerAsyncInfiniteLoop() = runTest {
+        withContext(Dispatchers.Default) {
+            val jsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val quickJs = QuickJs.create(Dispatchers.Default)
+            try {
+                quickJs.evaluationTimeoutMillis = 100
+                val evalJob = jsScope.async {
+                    assertFailsWith<QuickJsInterruptedException> {
+                        quickJs.evaluate<Unit>("while (true) { (async () => { while (true) {} })(); }")
+                    }
+                }
+                withTimeout(1_000) { evalJob.await() }
+            } finally {
+                runCatching {
+                    withTimeout(200) {
+                        jsScope.async { quickJs.close() }.await()
+                    }
+                }
+                jsScope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun interruptDuringPromiseRejectionReasonConversion() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                function("interruptMe") { interruptEvaluation() }
+                assertFailsWith<QuickJsInterruptedException> {
+                    evaluate<Unit>(
+                        """
+                        Promise.reject({ get x() { interruptMe(); while (true) {} } });
+                        """.trimIndent()
+                    )
+                }
+                assertEquals(2, evaluate<Int>("1 + 1"))
+            }
+        }
+    }
+
+    @Test
     fun evaluationTimeoutStopsJobsThatQueueTheNextJob() = runTest {
         withContext(Dispatchers.Default) {
             val quickJs = QuickJs.create(Dispatchers.Default)
@@ -140,7 +260,9 @@ class EvaluationInterruptTest {
 
     /**
      * Runs [evaluation] outside the test's scope, so a hung evaluation fails the
-     * test instead of blocking it, then checks that close() returns as well.
+     * test instead of blocking it. Then checks that the jobs it queued were
+     * dropped rather than left for the next evaluation to run, and that close()
+     * returns as well.
      */
     private suspend fun assertStopsAndCloses(
         quickJs: QuickJs,
@@ -151,6 +273,8 @@ class EvaluationInterruptTest {
         val evaluated = scope.async { evaluation() }
         afterLaunch()
         withTimeout(5_000) { evaluated.await() }
+        val next = scope.async { quickJs.evaluate<Int>("1 + 1") }
+        assertEquals(2, withTimeout(5_000) { next.await() })
         val closeJob = scope.launch { quickJs.close() }
         withTimeout(5_000) { closeJob.join() }
     }

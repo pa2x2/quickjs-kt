@@ -8,8 +8,9 @@
 #include "js_value_util.h"
 #include "jni_types_util.h"
 #include "jni_string_util.h"
+#include "quickjs_interrupt.h"
 
-#define COMMON_FUNC_DATA_LEN 2
+#define COMMON_FUNC_DATA_LEN 3
 
 #define GLOBAL_THIS_HANDLE -1
 
@@ -42,7 +43,9 @@ JSValue jni_invoke_getter(JSContext *context, jobject call_host, int64_t object_
     if (result == NULL) {
         return JS_NULL;
     }
-    return jobject_to_js_value(env, context, NULL, result);
+    JSValue js_result = jobject_to_js_value(env, context, NULL, result);
+    (*env)->DeleteLocalRef(env, result);
+    return js_result;
 }
 
 JSValue jni_invoke_setter(JSContext *context, jobject call_host, int64_t object_handle,
@@ -72,6 +75,7 @@ JSValue jni_invoke_setter(JSContext *context, jobject call_host, int64_t object_
     (*env)->CallVoidMethod(env, call_host, method_quick_js_on_call_setter(env),
                            object_handle, java_name, value);
     (*env)->DeleteLocalRef(env, java_name);
+    (*env)->DeleteLocalRef(env, value);
     // Check java exceptions
     jthrowable exception = try_catch_java_exceptions(env);
     if (exception != NULL) {
@@ -98,6 +102,7 @@ JSValue jni_invoke_function(JSContext *context, jobject call_host, int64_t objec
             JSValue js_exception = throw_java_exception(env, context, exception);
             (*env)->DeleteLocalRef(env, arg);
             (*env)->DeleteLocalRef(env, exception);
+            (*env)->DeleteLocalRef(env, args);
             return js_exception;
         }
         (*env)->SetObjectArrayElement(env, args, i, arg);
@@ -114,6 +119,7 @@ JSValue jni_invoke_function(JSContext *context, jobject call_host, int64_t objec
                                               java_name,
                                               args);
     (*env)->DeleteLocalRef(env, java_name);
+    (*env)->DeleteLocalRef(env, args);
     // Check java exceptions
     jthrowable exception = try_catch_java_exceptions(env);
     if (exception != NULL) {
@@ -121,7 +127,9 @@ JSValue jni_invoke_function(JSContext *context, jobject call_host, int64_t objec
         (*env)->DeleteLocalRef(env, exception);
         return js_exception;
     }
-    return jobject_to_js_value(env, context, NULL, result);
+    JSValue js_result = jobject_to_js_value(env, context, NULL, result);
+    (*env)->DeleteLocalRef(env, result);
+    return js_result;
 }
 
 JSValue jni_invoke_async_function(JSContext *context, jobject call_host,
@@ -137,8 +145,12 @@ JSValue jni_invoke_async_function(JSContext *context, jobject call_host,
     int args_len = argc + 2;
     jobjectArray args = (*env)->NewObjectArray(env, args_len, cls_object(env), NULL);
     // Set promise handles
-    (*env)->SetObjectArrayElement(env, args, 0, java_boxed_long(env, resolve_handle));
-    (*env)->SetObjectArrayElement(env, args, 1, java_boxed_long(env, reject_handle));
+    jobject resolve = java_boxed_long(env, resolve_handle);
+    jobject reject = java_boxed_long(env, reject_handle);
+    (*env)->SetObjectArrayElement(env, args, 0, resolve);
+    (*env)->SetObjectArrayElement(env, args, 1, reject);
+    (*env)->DeleteLocalRef(env, resolve);
+    (*env)->DeleteLocalRef(env, reject);
     // Fill args
     for (uint32_t i = 0; i < argc; i++) {
         jobject arg = js_value_to_jobject(env, context, argv[i]);
@@ -148,6 +160,7 @@ JSValue jni_invoke_async_function(JSContext *context, jobject call_host,
             JSValue js_exception = throw_java_exception(env, context, exception);
             (*env)->DeleteLocalRef(env, arg);
             (*env)->DeleteLocalRef(env, exception);
+            (*env)->DeleteLocalRef(env, args);
             return js_exception;
         }
         (*env)->SetObjectArrayElement(env, args, i + (args_len - argc), arg);
@@ -158,12 +171,14 @@ JSValue jni_invoke_async_function(JSContext *context, jobject call_host,
         (*env)->DeleteLocalRef(env, args);
         return JS_EXCEPTION;
     }
-    (*env)->CallObjectMethod(env, call_host,
-                             method_quick_js_on_call_function(env),
-                             object_handle,
-                             java_name,
-                             args);
+    jobject result = (*env)->CallObjectMethod(env, call_host,
+                                              method_quick_js_on_call_function(env),
+                                              object_handle,
+                                              java_name,
+                                              args);
     (*env)->DeleteLocalRef(env, java_name);
+    (*env)->DeleteLocalRef(env, args);
+    (*env)->DeleteLocalRef(env, result);
     // Check java exceptions
     jthrowable exception = try_catch_java_exceptions(env);
     if (exception != NULL) {
@@ -178,13 +193,20 @@ JSValue jni_invoke_async_function(JSContext *context, jobject call_host,
 JSValue
 property_getter(JSContext *context, JSValueConst this_val, int argc, JSValueConst *argv, int magic,
                 JSValue *func_data) {
+    int64_t globals_address;
+    JS_ToInt64Ext(context, &globals_address, func_data[2]);
+    Globals *globals = (Globals *) (intptr_t) globals_address;
+    if (globals != NULL && qjs_interrupt_check_or_throw(context, globals->interrupt_state)) {
+        return JS_EXCEPTION;
+    }
+
     int64_t host_address;
     JS_ToInt64Ext(context, &host_address, func_data[0]);
     jobject call_host = (jobject) host_address;
     int64_t object_handle;
     JS_ToInt64Ext(context, &object_handle, func_data[1]);
     size_t prop_name_length;
-    const char *prop_name = JS_ToCStringLen(context, &prop_name_length, func_data[2]);
+    const char *prop_name = JS_ToCStringLen(context, &prop_name_length, func_data[3]);
     if (prop_name == NULL) {
         return JS_EXCEPTION;
     }
@@ -194,19 +216,27 @@ property_getter(JSContext *context, JSValueConst this_val, int argc, JSValueCons
 
     JS_FreeCString(context, prop_name);
 
-    return result;
+    return qjs_interrupt_check_result(context, globals != NULL ? globals->interrupt_state : NULL,
+                                      result);
 }
 
 JSValue
 property_setter(JSContext *context, JSValueConst this_val, int argc, JSValueConst *argv, int magic,
                 JSValue *func_data) {
+    int64_t globals_address;
+    JS_ToInt64Ext(context, &globals_address, func_data[2]);
+    Globals *globals = (Globals *) (intptr_t) globals_address;
+    if (globals != NULL && qjs_interrupt_check_or_throw(context, globals->interrupt_state)) {
+        return JS_EXCEPTION;
+    }
+
     int64_t host_address;
     JS_ToInt64Ext(context, &host_address, func_data[0]);
     jobject call_host = (jobject) host_address;
     int64_t object_handle;
     JS_ToInt64Ext(context, &object_handle, func_data[1]);
     size_t prop_name_length;
-    const char *prop_name = JS_ToCStringLen(context, &prop_name_length, func_data[2]);
+    const char *prop_name = JS_ToCStringLen(context, &prop_name_length, func_data[3]);
     if (prop_name == NULL) {
         return JS_EXCEPTION;
     }
@@ -216,19 +246,27 @@ property_setter(JSContext *context, JSValueConst this_val, int argc, JSValueCons
 
     JS_FreeCString(context, prop_name);
 
-    return result;
+    return qjs_interrupt_check_result(context, globals != NULL ? globals->interrupt_state : NULL,
+                                      result);
 }
 
 JSValue
 function_invoke(JSContext *context, JSValueConst this_val, int argc, JSValueConst *argv, int magic,
                 JSValue *func_data) {
+    int64_t globals_address;
+    JS_ToInt64Ext(context, &globals_address, func_data[2]);
+    Globals *globals = (Globals *) (intptr_t) globals_address;
+    if (globals != NULL && qjs_interrupt_check_or_throw(context, globals->interrupt_state)) {
+        return JS_EXCEPTION;
+    }
+
     int64_t host_address;
     JS_ToInt64Ext(context, &host_address, func_data[0]);
     jobject call_host = (jobject) host_address;
     int64_t object_handle;
     JS_ToInt64Ext(context, &object_handle, func_data[1]);
     size_t func_name_length;
-    const char *func_name = JS_ToCStringLen(context, &func_name_length, func_data[2]);
+    const char *func_name = JS_ToCStringLen(context, &func_name_length, func_data[3]);
     if (func_name == NULL) {
         return JS_EXCEPTION;
     }
@@ -238,12 +276,21 @@ function_invoke(JSContext *context, JSValueConst this_val, int argc, JSValueCons
 
     JS_FreeCString(context, func_name);
 
-    return result;
+    return qjs_interrupt_check_result(context, globals != NULL ? globals->interrupt_state : NULL,
+                                      result);
 }
 
 JSValue async_function_invoke(JSContext *context, JSValueConst this_val,
                               int argc, JSValueConst *argv, int magic,
                               JSValue *func_data) {
+    // Get globals
+    int64_t globals_address;
+    JS_ToInt64Ext(context, &globals_address, func_data[2]);
+    Globals *globals = (Globals *) (intptr_t) globals_address;
+    if (globals != NULL && qjs_interrupt_check_or_throw(context, globals->interrupt_state)) {
+        return JS_EXCEPTION;
+    }
+
     JNIEnv *env = get_jni_env();
     if (env == NULL) {
         return JS_EXCEPTION;
@@ -261,18 +308,10 @@ JSValue async_function_invoke(JSContext *context, JSValueConst this_val,
     // Get the function name
     size_t function_name_length;
     const char *function_name = JS_ToCStringLen(
-            context, &function_name_length, func_data[2]);
+            context, &function_name_length, func_data[3]);
     if (function_name == NULL) {
         return JS_EXCEPTION;
     }
-
-    // Get globals
-    int64_t globals_address_low;
-    int64_t globals_address_high;
-    JS_ToInt64Ext(context, &globals_address_low, func_data[3]);
-    JS_ToInt64Ext(context, &globals_address_high, func_data[4]);
-    int64_t globals_address = (globals_address_low & 0xFFFFFFFF) | globals_address_high << 32;
-    Globals *globals = (Globals *) globals_address;
 
     // Handles are the indices
     int64_t resolve_handle = cvector_size(globals->created_js_functions);
@@ -295,7 +334,7 @@ JSValue async_function_invoke(JSContext *context, JSValueConst this_val,
 
     if (JS_IsException(result)) {
         // Error!
-        return result;
+        return qjs_interrupt_check_result(context, globals->interrupt_state, result);
     } else {
         // Ignore the async return
         JS_FreeValue(context, result);
@@ -303,7 +342,8 @@ JSValue async_function_invoke(JSContext *context, JSValueConst this_val,
 
     // Return the promise directly will cause a GC error:
     // void gc_decref_child(JSRuntime *, JSGCObjectHeader *): assertion "p->ref_count > 0" failed
-    return JS_DupValue(context, promise);
+    return qjs_interrupt_check_result(context, globals->interrupt_state,
+                                      JS_DupValue(context, promise));
 }
 
 void define_async_js_function_on(JSContext *context,
@@ -313,26 +353,10 @@ void define_async_js_function_on(JSContext *context,
                                  size_t name_length,
                                  int func_data_len,
                                  JSValue *func_data) {
-    // Append the globals pointer to the function data
-    size_t async_func_data_len = func_data_len + 2;
-    JSValue async_func_data[async_func_data_len];
-    for (int i = 0; i < func_data_len; ++i) {
-        async_func_data[i] = func_data[i];
-    }
-    int64_t globals_address = (int64_t) (globals);
-    int64_t globals_low = globals_address & 0xFFFFFFFF;
-    int64_t globals_high = (globals_address >> 32) & 0xFFFFFFFF;
-    async_func_data[func_data_len] = JS_NewBigInt64(context, globals_low);
-    async_func_data[func_data_len + 1] = JS_NewBigInt64(context, globals_high);
-
-    for (int i = func_data_len; i < async_func_data_len; ++i) {
-        // Add to free
-        cvector_push_back(globals->managed_js_values, async_func_data[i]);
-    }
-
+    (void) globals;
     JSValue invoke = JS_NewCFunctionData(context, async_function_invoke, 0, 0,
-                                         async_func_data_len,
-                                         async_func_data);
+                                         func_data_len,
+                                         func_data);
     int flags = JS_PROP_CONFIGURABLE;
     JSAtom prop = JS_NewAtomLen(context, name, name_length);
     // Define async function
@@ -418,6 +442,7 @@ JSValue define_js_object(JNIEnv *env, JSContext *context,
     JSValue common_func_data[COMMON_FUNC_DATA_LEN] = {
             JS_NewBigInt64(context, (int64_t) global_host), // host address
             JS_NewBigInt64(context, handle), // object handle
+            JS_NewBigInt64(context, (int64_t) (intptr_t) globals), // globals address
     };
 
     // Free these values before freeing the runtime
@@ -533,9 +558,10 @@ void define_js_function(JNIEnv *env, JSContext *context,
 
     // Function data
     uint32_t data_len = COMMON_FUNC_DATA_LEN + 1;
-    JSValue func_data[3] = {
+    JSValue func_data[4] = {
             JS_NewBigInt64(context, (int64_t) global_host), // host address
             JS_NewBigInt64(context, GLOBAL_THIS_HANDLE), // parent object handle
+            JS_NewBigInt64(context, (int64_t) (intptr_t) globals), // globals address
             JS_NewStringLen(context, func_name.data, func_name.length), // function name
     };
 

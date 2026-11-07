@@ -1,7 +1,9 @@
 package com.dokar.quickjs.test
 
 import com.dokar.quickjs.QuickJsException
+import com.dokar.quickjs.QuickJsInterruptedException
 import com.dokar.quickjs.binding.asyncFunction
+import com.dokar.quickjs.binding.function
 import com.dokar.quickjs.quickJs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -221,6 +223,37 @@ class AsyncErrorHandlingTest {
                 assertEquals(1, reported.size)
                 assertContains(reported.single().message!!, "stray")
             }
+        }
+    }
+
+    @Test
+    fun unhandledRejectionHandlerHearsNothingFromAnInterruptedEvaluation() = runTest {
+        withContext(Dispatchers.Default) {
+            quickJs {
+                function("interruptMe") { interruptEvaluation() }
+                val reported = mutableListOf<Throwable>()
+                unhandledRejectionHandler = { reported += it }
+
+                // The rejection is unhandled before the interrupt, which wins over it
+                assertFailsWith<QuickJsInterruptedException> {
+                    evaluate<Unit>("Promise.reject(new Error('stray')); interruptMe(); while (true) {}")
+                }
+                assertTrue(reported.isEmpty())
+                // The next evaluation reports its own rejection only
+                assertEquals(1, evaluate<Int>("Promise.reject(new Error('next')); 1"))
+                assertContains(reported.single().message!!, "next")
+            }
+        }
+    }
+
+    @Test
+    fun evaluateAfterUnhandledAsyncRejection() = runTest {
+        quickJs(Dispatchers.Default) {
+            asyncFunction("alwaysFails") { error("Expected rejection") }
+            assertFails {
+                evaluate<Any?>("alwaysFails()")
+            }
+            assertEquals(2, evaluate<Int>("1 + 1"))
         }
     }
 }

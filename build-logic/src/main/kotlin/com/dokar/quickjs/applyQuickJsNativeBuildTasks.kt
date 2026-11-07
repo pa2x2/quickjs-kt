@@ -13,6 +13,11 @@ private val jniLibraryPlatforms = listOf(
     Platform.macos_aarch64,
 )
 
+/**
+ * Registers the tasks that build the native QuickJS libraries with CMake (the JNI shared libraries
+ * and the Kotlin/Native static libraries) and wires them into the JVM compile, cinterop and link
+ * tasks.
+ */
 fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
     val nativeBuildDir = File(projectDir, "/native/build")
     val jniLibOutDir = File(nativeBuildDir, "/jni_libs")
@@ -28,12 +33,16 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
 
         outputs.dir(jniLibOutDir)
 
-        // Publishing builds every platform in release mode, other builds only the current
-        // platform in debug mode. Without this as an input, a debug build left by an earlier
-        // task in the same invocation (or an earlier run) counts as up to date for publishing.
-        val isPublishing = gradle.startParameter.taskNames
-            .any { it.contains("publish", ignoreCase = true) }
-        inputs.property("publishing", isPublishing)
+        // Publishing builds every platform in release mode, other builds (Maven Local included)
+        // only the current platform in debug mode. Without this as an input, a debug build left by
+        // an earlier task in the same invocation (or an earlier run) counts as up to date for
+        // publishing.
+        val taskNames = gradle.startParameter.taskNames
+        val isPublishing = taskNames.any {
+            it.contains("publish", ignoreCase = true) &&
+                    !it.contains("MavenLocal", ignoreCase = true)
+        }
+        inputs.property("isPublishing", isPublishing)
 
         doLast {
             // Drop the other mode's libraries, the jar packs whatever is in here
@@ -81,7 +90,7 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
                     platform = platform,
                     sharedLib = false,
                     withJni = false,
-                    release = false,
+                    release = true,
                     outputDir = nativeStaticLibOutDir,
                     withPlatformSuffixIfCopy = true,
                 )
@@ -150,6 +159,8 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
         "IosX64",
         "IosArm64",
         "IosSimulatorArm64",
+        "TvosArm64",
+        "TvosSimulatorArm64",
     )
     for (suffix in cinteropTaskSuffixes) {
         tasks.named("cinteropQuickjs$suffix") {
@@ -179,8 +190,31 @@ fun Project.applyQuickJsNativeBuildTasks(cmakeFile: File) {
 
 private fun Project.findBuildPlatformsFromStartTaskNames(): List<Platform> {
     val taskNames = gradle.startParameter.taskNames
+    val targetGroup = providers.gradleProperty("quickjs.targetGroup").orNull?.lowercase()
 
-    val isPublishing = taskNames.any { it.contains("publish", ignoreCase = true) }
+    fun List<Platform>.filterByTargetGroup(): List<Platform> {
+        if (targetGroup == null) return this
+        return filter { platform ->
+            when (targetGroup) {
+                "macos" -> platform == Platform.macos_x64 || platform == Platform.macos_aarch64
+                "ios" -> platform == Platform.ios_x64 ||
+                        platform == Platform.ios_aarch64 ||
+                        platform == Platform.ios_simulator_aarch64
+                "tvos" -> platform == Platform.tvos_aarch64 ||
+                        platform == Platform.tvos_simulator_aarch64
+                else -> error("Unknown quickjs.targetGroup: '$targetGroup'")
+            }
+        }
+    }
+
+    val isPublishingToMavenLocal = taskNames.any {
+        it.contains("publish", ignoreCase = true) &&
+                it.contains("MavenLocal", ignoreCase = true)
+    }
+    val isPublishing = taskNames.any {
+        it.contains("publish", ignoreCase = true) &&
+                !it.contains("MavenLocal", ignoreCase = true)
+    }
     if (isPublishing) {
         val allPlatforms = Platform.values().toList()
         return when (currentPlatform) {
@@ -192,17 +226,17 @@ private fun Project.findBuildPlatformsFromStartTaskNames(): List<Platform> {
             Platform.macos_x64,
             Platform.macos_aarch64 -> allPlatforms
             else -> allPlatforms
-        }
+        }.filterByTargetGroup()
     }
 
     val isBuild = taskNames.any { it.contains("build", ignoreCase = true) }
     val isAssemble = taskNames.any { it.contains("assemble", ignoreCase = true) }
     val isCheck = taskNames.any { it.contains("check", ignoreCase = true) }
 
-    if (isBuild || isAssemble || isCheck) {
+    if (isBuild || isAssemble || isCheck || isPublishingToMavenLocal) {
         when (currentPlatform) {
             Platform.linux_x64 -> {
-                return listOf(Platform.linux_x64)
+                return listOf(Platform.linux_x64).filterByTargetGroup()
             }
 
             Platform.macos_x64,
@@ -213,46 +247,57 @@ private fun Project.findBuildPlatformsFromStartTaskNames(): List<Platform> {
                     Platform.ios_x64,
                     Platform.ios_aarch64,
                     Platform.ios_simulator_aarch64,
-                )
+                    Platform.tvos_aarch64,
+                    Platform.tvos_simulator_aarch64,
+                ).filterByTargetGroup()
             }
 
             Platform.windows_x64 -> {
-                return listOf(Platform.windows_x64)
+                return listOf(Platform.windows_x64).filterByTargetGroup()
             }
 
             else -> {} // Not supported yet
         }
     }
 
-    var platform: Platform? = null
+    val matchedPlatforms = LinkedHashSet<Platform>()
     for (taskName in taskNames) {
         val name = taskName.lowercase()
         if (name.contains("mingwx64")) {
-            platform = Platform.windows_x64
-            break
-        } else if (name.contains("linuxx64")) {
-            platform = Platform.linux_x64
-            break
-        } else if (name.contains("linuxarm64")) {
-            platform = Platform.linux_aarch64
-            break
-        } else if (name.contains("macosx64")) {
-            platform = Platform.macos_x64
-            break
-        } else if (name.contains("macosarm64")) {
-            platform = Platform.macos_aarch64
-            break
-        } else if (name.contains("iosx64")) {
-            platform = Platform.ios_x64
-            break
-        } else if (name.contains("iosarm64")) {
-            platform = Platform.ios_aarch64
-            break
-        } else if (name.contains("iossimulatorarm64")) {
-            platform = Platform.ios_simulator_aarch64
-            break
+            matchedPlatforms.add(Platform.windows_x64)
+        }
+        if (name.contains("linuxx64")) {
+            matchedPlatforms.add(Platform.linux_x64)
+        }
+        if (name.contains("linuxarm64")) {
+            matchedPlatforms.add(Platform.linux_aarch64)
+        }
+        if (name.contains("macosx64")) {
+            matchedPlatforms.add(Platform.macos_x64)
+        }
+        if (name.contains("macosarm64")) {
+            matchedPlatforms.add(Platform.macos_aarch64)
+        }
+        if (name.contains("iosx64")) {
+            matchedPlatforms.add(Platform.ios_x64)
+        }
+        if (name.contains("iosarm64")) {
+            matchedPlatforms.add(Platform.ios_aarch64)
+        }
+        if (name.contains("iossimulatorarm64")) {
+            matchedPlatforms.add(Platform.ios_simulator_aarch64)
+        }
+        if (name.contains("tvosarm64")) {
+            matchedPlatforms.add(Platform.tvos_aarch64)
+        }
+        if (name.contains("tvossimulatorarm64")) {
+            matchedPlatforms.add(Platform.tvos_simulator_aarch64)
         }
     }
 
-    return listOf(platform ?: currentPlatform)
+    if (matchedPlatforms.isNotEmpty()) {
+        return matchedPlatforms.toList().filterByTargetGroup()
+    }
+
+    return listOf(currentPlatform).filterByTargetGroup()
 }
